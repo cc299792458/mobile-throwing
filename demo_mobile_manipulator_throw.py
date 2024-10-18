@@ -35,7 +35,7 @@ def plan_and_simulate_throw(box_position):
     urdf_path = "franka_panda/panda.urdf"
     robot = p.loadURDF(urdf_path, [0, 0, 0], useFixedBase=True, flags=p.URDF_USE_INERTIA_FROM_FILE)
     # get initial guess
-    q_candidates, phi_candidates, throw_candidates = brt_chunk_robot_data_matching(z, robot_path=robot_path, brt_path=experiment_path)
+    q_candidates, phi_candidates, throw_candidates = match_robot_brt_data(z, robot_path, experiment_path)
     q_candidates = np.array(q_candidates)
     phi_candidates = np.array(phi_candidates)
     throw_candidates = np.array(throw_candidates)
@@ -87,58 +87,59 @@ def plan_and_simulate_throw(box_position):
     
     throw_simulation_mobile(traj_throw, throw_config, gravity) #, video_path=video_path)
 
-def brt_chunk_robot_data_matching(z_target_to_base, robot_path, brt_path, thres=0.1):
+def match_robot_brt_data(z_target_to_base, robot_data_path, brt_data_path, velocity_threshold=0.1):
     """
-
-    :param z:           z_target-z_arm_base
-    :param robot_path:
-    :param brt_path:
-    :return:
+    Match robot data with BRT data to find initial guesses of (joint_angles, phi, positions) for trajectory planning.
+    
+    :param z_target_to_base: Target z-position relative to the robot base.
+    :param robot_data_path: Path to the robot's configuration data files.
+    :param brt_data_path: Path to the BRT data files.
+    :param velocity_threshold: Threshold to filter out invalid velocities.
+    :return: Lists of matched joint configurations, phi angles, and target positions.
     """
-    # Given target position, find out initial guesses of (q, phi, x), that is to be feed to Ruckig
-    st = time.time()
-    phis = np.linspace(-90, 90, 13)
-    # robot_zs = np.load(robot_path + '/robot_zs.npy')
-    robot_zs = np.arange(start=0.0, stop=1.10+0.01, step=0.05)
-    num_robot_zs = robot_zs.shape[0]
-    mesh = np.load(robot_path+'/qs.npy')
-    robot_phi_gamma_velos_naive = np.load(robot_path + '/phi_gamma_velos_naive.npy')
-    robot_phi_gamma_q_idxs_naive = np.load(robot_path + '/phi_gamma_q_idxs_naive.npy')
-    num_gammas = robot_phi_gamma_q_idxs_naive.shape[2]
+    start_time = time.time()
 
-    brt_zs = np.load(brt_path + '/brt_zs.npy')
-    brt_z_min = np.min(brt_zs)
-    num_brt_zs = brt_zs.shape[0]
-    shift_idx = round((z_target_to_base+brt_z_min) / 0.05)
-    with open (brt_path + '/brt_chunk.pkl', 'rb') as fp:
-        brt_chunk = pickle.load(fp)
-    q_candidates = []
-    phi_candidates = []
-    x_candidates = []
-    for i, z in enumerate(robot_zs):
-        if i-shift_idx > num_brt_zs-1:
+    phi_angles = np.linspace(-90, 90, 13)  # Possible phi values to check
+    robot_z_levels = np.arange(0.0, 1.11, 0.05)  # Discretized z-levels for the robot arm
+    num_robot_z_levels = len(robot_z_levels)
+
+    # Load robot and BRT data
+    joint_mesh = np.load(f"{robot_data_path}/qs.npy")
+    robot_velocity_data = np.load(f"{robot_data_path}/phi_gamma_velos_naive.npy")
+    joint_indices = np.load(f"{robot_data_path}/phi_gamma_q_idxs_naive.npy")
+
+    brt_z_levels = np.load(f"{brt_data_path}/brt_zs.npy")
+    brt_min_z = np.min(brt_z_levels)
+    shift_index = round((z_target_to_base + brt_min_z) / 0.05)
+
+    with open(f"{brt_data_path}/brt_chunk.pkl", 'rb') as fp:
+        brt_data_chunks = pickle.load(fp)
+
+    matched_joint_angles, matched_phi_angles, matched_positions = [], [], []
+
+    for i, robot_z in enumerate(robot_z_levels):
+        if i - shift_index >= len(brt_z_levels):
             continue
-        for k in range(num_gammas):
-            brt_data_z_gamma = brt_chunk[i-shift_idx][k]
-            if brt_data_z_gamma is None:
+        
+        for gamma_index in range(robot_velocity_data.shape[2]):
+            brt_data_for_level = brt_data_chunks[i - shift_index][gamma_index]
+            if brt_data_for_level is None:
                 continue
-            for j, phi in enumerate(phis):
-                # adaptive cutoff according to max velo
-                max_velo = robot_phi_gamma_velos_naive[i, j, k]
-                brt_candidate = brt_data_z_gamma[brt_data_z_gamma[:, 4]<max_velo-thres]
-                if brt_candidate.shape[0] > 0:
-                    assert np.max(brt_candidate[:, 4]) < max_velo - thres
-                    n = brt_candidate.shape[0]
-                    q_add = [mesh[robot_phi_gamma_q_idxs_naive[i,j,k].astype(int), :].flatten()] * n
-                    phi_add = [phi] * n
-                    x_add = list(brt_candidate[:, :-1])
-                    q_candidates = q_candidates + q_add
-                    phi_candidates = phi_candidates + phi_add
-                    x_candidates = x_candidates + x_add
-    print("Given query z=", "{0:0.2f}".format(z_target_to_base) , ", found", len(q_candidates),
-          "initial guesses in", "{0:0.2f}".format(1000 * (time.time() - st)), "ms")
 
-    return  q_candidates, phi_candidates, x_candidates
+            for phi_index, phi_angle in enumerate(phi_angles):
+                max_velocity = robot_velocity_data[i, phi_index, gamma_index]
+                valid_candidates = brt_data_for_level[brt_data_for_level[:, 4] < max_velocity - velocity_threshold]
+
+                if valid_candidates.shape[0] > 0:
+                    num_candidates = valid_candidates.shape[0]
+                    matched_joint_angles += [joint_mesh[joint_indices[i, phi_index, gamma_index].astype(int), :].flatten()] * num_candidates
+                    matched_phi_angles += [phi_angle] * num_candidates
+                    matched_positions += list(valid_candidates[:, :-1])
+
+    elapsed_time = time.time() - start_time
+    print(f"Query z={z_target_to_base:.2f}, found {len(matched_joint_angles)} candidates in {elapsed_time * 1000:.2f} ms")
+
+    return matched_joint_angles, matched_phi_angles, matched_positions
 
 def get_throw_config(robot, q, phi, throw):
     """
