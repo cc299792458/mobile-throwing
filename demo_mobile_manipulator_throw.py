@@ -18,19 +18,19 @@ path.insert(0, str(build_path))
 def main(box_position):
     # Height of target box relative to panda base, [-0.5, 0.9] is good
     z = box_position[2]
-    base0 = -box_position[:2]
+    base_start_position = -box_position[:2]
 
     # joint limit of panda, from https://frankaemika.github.io/docs/control_parameters.html
     ul = np.array([2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973])
     ll = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
 
     # initial joint position
-    q0 = 0.5*(ul+ll)
-    q0_dot = np.zeros(7)
-    # base0 = [1.0, -1.5]
+    joint_start_position = 0.5*(ul+ll)
+    joint_start_velocity = np.zeros(7)
+    # base_start_position = [1.0, -1.5]
     robot_path = "robot_data/panda_5_joint_dense_1_dataset_15"
     experiment_path = "object_data/brt_gravity_only"
-    g = -9.81
+    gravity = -9.81
 
     clid = p.connect(p.DIRECT)
     p.setAdditionalSearchPath(pybullet_data.getDataPath())  # optionally
@@ -58,9 +58,9 @@ def main(box_position):
         if throw_config_full[4][2] < -0.02:
             continue
         # calculate throwing trajectory
-        traj_throw = get_traj_from_ruckig(q0=q0, q0_dot=q0_dot,
+        traj_throw = get_traj_from_ruckig(joint_start_position=joint_start_position, joint_start_velocity=joint_start_velocity,
                                           qd=throw_config_full[0], qd_dot=throw_config_full[3],
-                                          base0=base0, based =-throw_config_full[-1][:-1])
+                                          base_start_position=base_start_position, based =-throw_config_full[-1][:-1])
         traj_durations.append(traj_throw.duration)
         trajs.append(traj_throw)
         throw_configs.append(throw_config_full)
@@ -78,15 +78,15 @@ def main(box_position):
     # throw_config_full = get_full_throwing_config(robot, q_candidates[selected_idx],
     #                                                  phi_candidates[selected_idx],
     #                                                  throw_candidates[selected_idx])
-    # traj_throw = get_traj_from_ruckig(q0=q0, q0_dot=q0_dot, qd=throw_config_full[0], qd_dot=throw_config_full[3],
-    #                                       base0=base0, based =-throw_config_full[-1][:-1])
+    # traj_throw = get_traj_from_ruckig(joint_start_position=joint_start_position, joint_start_velocity=joint_start_velocity, qd=throw_config_full[0], qd_dot=throw_config_full[3],
+    #                                       base_start_position=base_start_position, based =-throw_config_full[-1][:-1])
     p.disconnect()
 
     print("box_position: ", throw_config_full[-1])
     print("throwing range: ", "{0:0.2f}".format(-throw_candidates[selected_idx, 0]),
           "throwing height", "{0:0.2f}".format(throw_candidates[selected_idx, 1]))
     video_path=experiment_path+"/moving_base/throw"+ str(int(1000*z))+".mp4"
-    throw_simulation_mobile(traj_throw, throw_config_full, g) #, video_path=video_path)
+    throw_simulation_mobile(traj_throw, throw_config_full, gravity) #, video_path=video_path)
 
 def brt_chunk_robot_data_matching(z_target_to_base, robot_path, brt_path, thres=0.1):
     """
@@ -157,7 +157,7 @@ def get_full_throwing_config(robot, q, phi, throw):
 
     # bullet fk
     controlled_joints = [0, 1, 2, 3, 4, 5, 6]
-    p.resetJointStatesMultiDof(robot, controlled_joints, [[q0_i] for q0_i in q])
+    p.resetJointStatesMultiDof(robot, controlled_joints, [[joint_start_position_i] for joint_start_position_i in q])
     AE =p.getLinkState(robot, 11)[0]
     q = q.tolist()
     J, _ = p.calculateJacobian(robot, 11, [0, 0, 0], q+[0.1, 0.1], [0.0]*9, [0.0]*9)
@@ -195,11 +195,11 @@ def get_full_throwing_config(robot, q, phi, throw):
     q[-1] = eef_angle_near
     return (q, phi, throw, q_dot, blockPosInGripper, eef_velo, AE, box_position)
 
-def get_traj_from_ruckig(q0, q0_dot, qd, qd_dot, base0, based):
+def get_traj_from_ruckig(joint_start_position, joint_start_velocity, qd, qd_dot, base_start_position, based):
     inp = InputParameter(9)
     zeros2 = np.zeros(2)
-    inp.current_position = np.concatenate((q0, base0))
-    inp.current_velocity = np.concatenate((q0_dot, zeros2))
+    inp.current_position = np.concatenate((joint_start_position, base_start_position))
+    inp.current_velocity = np.concatenate((joint_start_velocity, zeros2))
     inp.current_acceleration = np.zeros(9)
 
     inp.target_position = np.concatenate((qd, based))
@@ -215,7 +215,7 @@ def get_traj_from_ruckig(q0, q0_dot, qd, qd_dot, base0, based):
     _ = otg.calculate(inp, trajectory)
     return trajectory
 
-def throw_simulation_mobile(trajectory, throw_config_full, g=-9.81, video_path=None):
+def throw_simulation_mobile(trajectory, throw_config_full, gravity=-9.81, video_path=None):
     PANDA_BASE_HEIGHT = 0.5076438625
     box_position = throw_config_full[-1]
     clid = p.connect(p.GUI)
@@ -225,7 +225,7 @@ def throw_simulation_mobile(trajectory, throw_config_full, g=-9.81, video_path=N
     # NOTE: need high frequency
     hz = 1000
     delta_t = 1.0 / hz
-    p.setGravity(0, 0, g)
+    p.setGravity(0, 0, gravity)
     p.setTimeStep(delta_t)
     p.setRealTimeSimulation(0)
 
@@ -264,9 +264,9 @@ def throw_simulation_mobile(trajectory, throw_config_full, g=-9.81, video_path=N
 
     # reset the joint
     # see https://github.com/bulletphysics/bullet3/issues/2803#issuecomment-770206176
-    q0 = traj_data[0, 0]
+    joint_start_position = traj_data[0, 0]
     p.resetBasePositionAndOrientation(robotId, np.append(base_traj_data[0,0], 0.0), [0, 0, 0,1])
-    p.resetJointStatesMultiDof(robotId, controlled_joints, [[q0_i] for q0_i in q0])
+    p.resetJointStatesMultiDof(robotId, controlled_joints, [[joint_start_position_i] for joint_start_position_i in joint_start_position])
     eef_state = p.getLinkState(robotId, robotEndEffectorIndex, computeLinkVelocity=1)
     p.resetBasePositionAndOrientation(soccerballId, eef_state[0], [0, 0, 0, 1])
     p.resetJointState(robotId, gripper_joints[0], 0.03)
@@ -280,13 +280,13 @@ def throw_simulation_mobile(trajectory, throw_config_full, g=-9.81, video_path=N
             ref_full = trajectory.at_time(tt)
             ref = [ref_full[i][:7] for i in range(3)]
             ref_base = [ref_full[i][-2:] for i in range(3)]
-            p.resetJointStatesMultiDof(robotId, controlled_joints, [[q0_i] for q0_i in ref[0]], targetVelocities=[[q0_i] for q0_i in ref[1]])
+            p.resetJointStatesMultiDof(robotId, controlled_joints, [[joint_start_position_i] for joint_start_position_i in ref[0]], targetVelocities=[[joint_start_position_i] for joint_start_position_i in ref[1]])
             p.resetBasePositionAndOrientation(robotId, np.append(ref_base[0], 0.0), [0, 0, 0, 1])
         else:
             ref_full = trajectory.at_time(plan_time)
             ref = [ref_full[i][:7] for i in range(3)]
             ref_base = [ref_full[i][-2:] for i in range(3)]
-            p.resetJointStatesMultiDof(robotId, controlled_joints, [[q0_i] for q0_i in ref[0]])
+            p.resetJointStatesMultiDof(robotId, controlled_joints, [[joint_start_position_i] for joint_start_position_i in ref[0]])
             p.resetBasePositionAndOrientation(robotId, np.append(ref_base[0], 0.0), [0, 0, 0, 1])
         if tt > plan_time - 1*delta_t:
             p.resetJointState(robotId, gripper_joints[0], 0.05)
