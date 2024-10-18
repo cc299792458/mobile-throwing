@@ -1,38 +1,36 @@
-import argparse
 import time
 import math
 import pickle
+import argparse
 import numpy as np
 import pybullet as p
 import pybullet_data
 
-from pathlib import Path
 from sys import path
+from pathlib import Path
 from ruckig import InputParameter, Ruckig, Trajectory, Result
-
 
 # Path to the build directory including a file similar to 'ruckig.cpython-37m-x86_64-linux-gnu'.
 build_path = Path(__file__).parent.absolute().parent / 'build'
 path.insert(0, str(build_path))
 
-def main(box_position):
+def plan_and_simulate_throw(box_position):
     # Height of target box relative to panda base, [-0.5, 0.9] is good
     z = box_position[2]
     base_start_position = -box_position[:2]
 
-    # joint limit of panda, from https://frankaemika.github.io/docs/control_parameters.html
-    ul = np.array([2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973])
-    ll = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
+    # # joint limit of panda, from https://frankaemika.github.io/docs/control_parameters.html
+    # ul = np.array([2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973])
+    # ll = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
 
     # initial joint position
-    joint_start_position = 0.5*(ul+ll)
+    joint_start_position = np.array([0.0, -np.pi / 4, 0.0, -np.pi, 0.0, np.pi * 3 / 4, np.pi / 4,])
     joint_start_velocity = np.zeros(7)
-    # base_start_position = [1.0, -1.5]
     robot_path = "robot_data/panda_5_joint_dense_1_dataset_15"
     experiment_path = "object_data/brt_gravity_only"
     gravity = -9.81
 
-    clid = p.connect(p.DIRECT)
+    client_id = p.connect(p.DIRECT)
     p.setAdditionalSearchPath(pybullet_data.getDataPath())  # optionally
     urdf_path = "franka_panda/panda.urdf"
     robot = p.loadURDF(urdf_path, [0, 0, 0], useFixedBase=True, flags=p.URDF_USE_INERTIA_FROM_FILE)
@@ -59,7 +57,7 @@ def main(box_position):
             continue
         # calculate throwing trajectory
         traj_throw = get_traj_from_ruckig(joint_start_position=joint_start_position, joint_start_velocity=joint_start_velocity,
-                                          qd=throw_config_full[0], qd_dot=throw_config_full[3],
+                                          joint_throw_position=throw_config_full[0], joint_throw_velocity=throw_config_full[3],
                                           base_start_position=base_start_position, based =-throw_config_full[-1][:-1])
         traj_durations.append(traj_throw.duration)
         trajs.append(traj_throw)
@@ -78,7 +76,7 @@ def main(box_position):
     # throw_config_full = get_full_throwing_config(robot, q_candidates[selected_idx],
     #                                                  phi_candidates[selected_idx],
     #                                                  throw_candidates[selected_idx])
-    # traj_throw = get_traj_from_ruckig(joint_start_position=joint_start_position, joint_start_velocity=joint_start_velocity, qd=throw_config_full[0], qd_dot=throw_config_full[3],
+    # traj_throw = get_traj_from_ruckig(joint_start_position=joint_start_position, joint_start_velocity=joint_start_velocity, joint_throw_position=throw_config_full[0], joint_throw_velocity=throw_config_full[3],
     #                                       base_start_position=base_start_position, based =-throw_config_full[-1][:-1])
     p.disconnect()
 
@@ -86,6 +84,7 @@ def main(box_position):
     print("throwing range: ", "{0:0.2f}".format(-throw_candidates[selected_idx, 0]),
           "throwing height", "{0:0.2f}".format(throw_candidates[selected_idx, 1]))
     video_path=experiment_path+"/moving_base/throw"+ str(int(1000*z))+".mp4"
+    
     throw_simulation_mobile(traj_throw, throw_config_full, gravity) #, video_path=video_path)
 
 def brt_chunk_robot_data_matching(z_target_to_base, robot_path, brt_path, thres=0.1):
@@ -195,15 +194,15 @@ def get_full_throwing_config(robot, q, phi, throw):
     q[-1] = eef_angle_near
     return (q, phi, throw, q_dot, blockPosInGripper, eef_velo, AE, box_position)
 
-def get_traj_from_ruckig(joint_start_position, joint_start_velocity, qd, qd_dot, base_start_position, based):
+def get_traj_from_ruckig(joint_start_position, joint_start_velocity, joint_throw_position, joint_throw_velocity, base_start_position, based):
     inp = InputParameter(9)
     zeros2 = np.zeros(2)
     inp.current_position = np.concatenate((joint_start_position, base_start_position))
     inp.current_velocity = np.concatenate((joint_start_velocity, zeros2))
     inp.current_acceleration = np.zeros(9)
 
-    inp.target_position = np.concatenate((qd, based))
-    inp.target_velocity = np.concatenate((qd_dot, zeros2))
+    inp.target_position = np.concatenate((joint_throw_position, based))
+    inp.target_velocity = np.concatenate((joint_throw_velocity, zeros2))
     inp.target_acceleration = np.zeros(9)
 
     inp.max_velocity = np.array([2.1750, 2.1750, 2.1750, 2.1750, 2.6100, 2.6100, 2.6100, 2.0, 2.0])
@@ -213,20 +212,21 @@ def get_traj_from_ruckig(joint_start_position, joint_start_velocity, qd, qd_dot,
     otg = Ruckig(9)
     trajectory = Trajectory(9)
     _ = otg.calculate(inp, trajectory)
+
     return trajectory
 
 def throw_simulation_mobile(trajectory, throw_config_full, gravity=-9.81, video_path=None):
     PANDA_BASE_HEIGHT = 0.5076438625
     box_position = throw_config_full[-1]
-    clid = p.connect(p.GUI)
+    client_id = p.connect(p.GUI)
     p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
     p.resetDebugVisualizerCamera(cameraDistance=3.0, cameraYaw=160, cameraPitch=-40, cameraTargetPosition=[0.75, -0.75, 0])
 
     # NOTE: need high frequency
-    hz = 1000
-    delta_t = 1.0 / hz
+    freq = 1000
+    dt = 1.0 / freq
     p.setGravity(0, 0, gravity)
-    p.setTimeStep(delta_t)
+    p.setTimeStep(dt)
     p.setRealTimeSimulation(0)
 
     AE = throw_config_full[-2]
@@ -250,9 +250,9 @@ def throw_simulation_mobile(trajectory, throw_config_full, gravity=-9.81, video_
     p.changeDynamics(robotId, gripper_joints[0], jointUpperLimit=100)
     p.changeDynamics(robotId, gripper_joints[1], jointUpperLimit=100)
 
-    t0, tf = 0, trajectory.duration
-    plan_time = tf - t0
-    sample_t = np.arange(0, tf, delta_t)
+    start_time, end_time = 0, trajectory.duration
+    plan_time = end_time - start_time
+    sample_t = np.arange(0, end_time, dt)
     n_steps = sample_t.shape[0]
     traj_data = np.zeros([3, n_steps, 7])
     base_traj_data = np.zeros([3, n_steps, 2])
@@ -288,7 +288,7 @@ def throw_simulation_mobile(trajectory, throw_config_full, gravity=-9.81, video_
             ref_base = [ref_full[i][-2:] for i in range(3)]
             p.resetJointStatesMultiDof(robotId, controlled_joints, [[joint_start_position_i] for joint_start_position_i in ref[0]])
             p.resetBasePositionAndOrientation(robotId, np.append(ref_base[0], 0.0), [0, 0, 0, 1])
-        if tt > plan_time - 1*delta_t:
+        if tt > plan_time - 1*dt:
             p.resetJointState(robotId, gripper_joints[0], 0.05)
             p.resetJointState(robotId, gripper_joints[1], 0.05)
         else:
@@ -296,10 +296,10 @@ def throw_simulation_mobile(trajectory, throw_config_full, gravity=-9.81, video_
             p.resetBasePositionAndOrientation(soccerballId, eef_state[0], [0, 0, 0, 1])
             p.resetBaseVelocity(soccerballId, linearVelocity=eef_state[-2])
         p.stepSimulation()
-        tt = tt + delta_t
+        tt = tt + dt
         if tt > trajectory.duration:
             flag = False
-        time.sleep(delta_t)
+        time.sleep(dt)
         if tt > 6.0:
             break
     if not (video_path is None):
@@ -316,5 +316,5 @@ if __name__ == '__main__':
     ARGS = parser.parse_args()
 
     box_position = np.array([ARGS.box_x, ARGS.box_y, ARGS.box_z])
-    print(box_position)
-    main(box_position)
+    print(f"box position in panda frame: {box_position}")
+    plan_and_simulate_throw(box_position)
